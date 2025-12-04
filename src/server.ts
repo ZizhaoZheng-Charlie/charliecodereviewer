@@ -1,16 +1,11 @@
-// Load environment variables from .env file
-import dotenv from "dotenv";
-dotenv.config();
-
 import express from "express";
-import { SmeeService } from "./services/smee.service";
 import webhookRoutes from "./routes/webhook.routes";
 import { WebhookController } from "./controllers/webhook.controller";
 
 const app = express();
 const PORT = process.env.PORT || "3000";
-const SMEE_URL = process.env.SMEE_URL;
-const GITHUB_WEBHOOK_ENDPOINT = `/webhooks/github`;
+const AWS_WEBHOOK_URL = process.env.AWS_WEBHOOK_URL;
+const GITHUB_WEBHOOK_ENDPOINT = `/github-webhook`;
 
 // Middleware to log all incoming requests (for debugging)
 app.use((req, _res, next) => {
@@ -32,34 +27,19 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// Smee status endpoint
-app.get("/smee/status", (_req, res) => {
-  if (smeeService) {
+// AWS Webhook status endpoint
+app.get("/aws-webhook/status", (_req, res) => {
+  if (AWS_WEBHOOK_URL) {
     res.json({
       status: "configured",
-      smee: smeeService.getStatus(),
+      awsWebhookUrl: AWS_WEBHOOK_URL,
+      message: "AWS webhook URL is configured",
     });
   } else {
     res.json({
       status: "not_configured",
-      message: "SMEE_URL environment variable is not set",
-      smee: null,
-    });
-  }
-});
-
-// Smee refresh endpoint (force update connection state)
-app.get("/smee/refresh", (_req, res) => {
-  if (smeeService) {
-    smeeService.refreshConnectionState();
-    res.json({
-      status: "refreshed",
-      smee: smeeService.getStatus(),
-    });
-  } else {
-    res.status(400).json({
-      status: "error",
-      message: "Smee service is not configured",
+      message: "AWS_WEBHOOK_URL environment variable is not set",
+      awsWebhookUrl: null,
     });
   }
 });
@@ -68,7 +48,7 @@ app.get("/smee/refresh", (_req, res) => {
 app.use("/api/webhook", webhookRoutes);
 
 // GitHub webhook GET endpoint (for webhook verification during setup)
-app.get([GITHUB_WEBHOOK_ENDPOINT, "/webhook/github"], (_req, res) => {
+app.get(GITHUB_WEBHOOK_ENDPOINT, (_req, res) => {
   res.status(200).json({
     status: "ok",
     message: "GitHub webhook endpoint is active",
@@ -76,28 +56,13 @@ app.get([GITHUB_WEBHOOK_ENDPOINT, "/webhook/github"], (_req, res) => {
   });
 });
 
-// Test endpoint to verify webhook endpoint is accessible
-app.post(`${GITHUB_WEBHOOK_ENDPOINT}/test`, (req, res) => {
-  console.log("🧪 Test webhook endpoint called");
-  res.status(200).json({
-    status: "ok",
-    message: "Webhook endpoint is accessible",
-    timestamp: new Date().toISOString(),
-    body: req.body,
-    headers: {
-      "content-type": req.headers["content-type"],
-      "user-agent": req.headers["user-agent"],
-    },
-  });
-});
-
-// GitHub webhook POST endpoint (for Smee)
+// GitHub webhook POST endpoint
 // This endpoint handles GitHub webhooks directly and transforms them to our webhook format
 //
 // IMPORTANT: GitHub App webhook payloads always include installation.id in the payload.
 // This installation ID is required to generate installation access tokens for API calls.
 // Reference: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
-app.post([GITHUB_WEBHOOK_ENDPOINT, "/webhook/github"], async (req, res) => {
+app.post(GITHUB_WEBHOOK_ENDPOINT, async (req, res) => {
   try {
     // Extract GitHub webhook headers
     const githubEvent = req.headers["x-github-event"] as string;
@@ -173,27 +138,22 @@ app.post([GITHUB_WEBHOOK_ENDPOINT, "/webhook/github"], async (req, res) => {
   }
 });
 
-// Initialize Smee client
-const targetUrl = `http://localhost:${PORT}${GITHUB_WEBHOOK_ENDPOINT}`;
-const smeeService = SMEE_URL ? new SmeeService(SMEE_URL, targetUrl) : null;
-
 const server = app.listen(PORT, () => {
-  // Start Smee client after server is ready
-  if (smeeService) {
-    try {
-      smeeService.start();
-    } catch (error) {
-      console.error("❌ Failed to start Smee client:", error);
-      console.error(
-        "⚠️  Smee client failed to start. Webhooks from Smee will not be forwarded."
-      );
-    }
+  console.log(`🚀 Server running on port ${PORT}`);
+  if (AWS_WEBHOOK_URL) {
+    console.log(`✅ AWS Webhook URL configured: ${AWS_WEBHOOK_URL}`);
+    console.log(
+      `   Configure your GitHub App webhook URL to: ${AWS_WEBHOOK_URL}`
+    );
   } else {
+    console.warn("⚠️  AWS_WEBHOOK_URL environment variable is not set.");
     console.warn(
-      "⚠️  SMEE_URL environment variable is not set. Smee client will not start."
+      "   For local development, webhooks can be sent directly to: http://localhost:" +
+        PORT +
+        GITHUB_WEBHOOK_ENDPOINT
     );
     console.warn(
-      "   To enable Smee, set SMEE_URL in your .env file (e.g., SMEE_URL=https://smee.io/your-channel-id)"
+      "   For production, set AWS_WEBHOOK_URL in your .env file (e.g., AWS_WEBHOOK_URL=https://your-api-gateway-url.amazonaws.com/github_webhook)"
     );
   }
 });
@@ -201,9 +161,6 @@ const server = app.listen(PORT, () => {
 // Graceful shutdown
 const shutdown = () => {
   console.log("\n🛑 Shutting down gracefully...");
-  if (smeeService) {
-    smeeService.stop();
-  }
   server.close(() => {
     console.log("✅ Server closed");
     process.exit(0);
