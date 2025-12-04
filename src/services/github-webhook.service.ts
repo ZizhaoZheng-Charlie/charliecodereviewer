@@ -39,53 +39,64 @@ export class GitHubWebhookService {
       );
     }
 
-    // Read private key from file
+    // Read private key from environment variable or file path
+    // For Lambda deployment, use GITHUB_APP_PRIVATE_KEY (direct string)
+    // For local development, use GITHUB_APP_PRIVATE_KEY_PATH (file path)
+    const privateKeyEnv = process.env.GITHUB_APP_PRIVATE_KEY;
     const privateKeyPath = process.env.GITHUB_APP_PRIVATE_KEY_PATH;
-    if (!privateKeyPath) {
-      throw new Error(
-        "GITHUB_APP_PRIVATE_KEY_PATH environment variable is required"
-      );
-    }
 
-    // Load private key from file
-    // Resolve the path - handle both relative and absolute paths
-    let resolvedPrivateKeyPath: string;
-    if (privateKeyPath.startsWith("/") || /^[A-Z]:/.test(privateKeyPath)) {
-      // Absolute path (Unix or Windows)
-      resolvedPrivateKeyPath = privateKeyPath;
+    let formattedPrivateKey: string;
+
+    if (privateKeyEnv) {
+      // Read private key directly from environment variable (for Lambda)
+      // Parse private key - handle both with and without newlines
+      // Replace literal \n with actual newlines, then trim any extra whitespace
+      formattedPrivateKey = privateKeyEnv.replace(/\\n/g, "\n").trim();
+    } else if (privateKeyPath) {
+      // Load private key from file (for local development)
+      // Resolve the path - handle both relative and absolute paths
+      let resolvedPrivateKeyPath: string;
+      if (privateKeyPath.startsWith("/") || /^[A-Z]:/.test(privateKeyPath)) {
+        // Absolute path (Unix or Windows)
+        resolvedPrivateKeyPath = privateKeyPath;
+      } else {
+        // Relative path - resolve from project root
+        const projectRoot = process.cwd();
+        resolvedPrivateKeyPath = resolve(projectRoot, privateKeyPath);
+      }
+
+      // Check if file exists before trying to read
+      if (!existsSync(resolvedPrivateKeyPath)) {
+        throw new Error(
+          `Private key file not found: ${resolvedPrivateKeyPath} (resolved from: ${privateKeyPath}). ` +
+            `Current working directory: ${process.cwd()}`
+        );
+      }
+
+      let privateKey: string;
+      try {
+        privateKey = readFileSync(resolvedPrivateKeyPath, "utf-8");
+      } catch (error) {
+        throw new Error(
+          `Failed to read private key from file ${privateKeyPath} (resolved: ${resolvedPrivateKeyPath}): ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+
+      // Validate private key is not empty
+      if (!privateKey || privateKey.trim().length === 0) {
+        throw new Error(
+          `Private key file ${privateKeyPath} is empty. Please ensure the file contains a valid GitHub App private key.`
+        );
+      }
+
+      // Parse private key - handle both with and without newlines (for env var case)
+      // Replace literal \n with actual newlines, then trim any extra whitespace
+      formattedPrivateKey = privateKey.replace(/\\n/g, "\n").trim();
     } else {
-      // Relative path - resolve from project root
-      const projectRoot = process.cwd();
-      resolvedPrivateKeyPath = resolve(projectRoot, privateKeyPath);
-    }
-
-    // Check if file exists before trying to read
-    if (!existsSync(resolvedPrivateKeyPath)) {
       throw new Error(
-        `Private key file not found: ${resolvedPrivateKeyPath} (resolved from: ${privateKeyPath}). ` +
-          `Current working directory: ${process.cwd()}`
+        "Either GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH environment variable is required"
       );
     }
-
-    let privateKey: string;
-    try {
-      privateKey = readFileSync(resolvedPrivateKeyPath, "utf-8");
-    } catch (error) {
-      throw new Error(
-        `Failed to read private key from file ${privateKeyPath} (resolved: ${resolvedPrivateKeyPath}): ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    // Validate private key is not empty
-    if (!privateKey || privateKey.trim().length === 0) {
-      throw new Error(
-        `Private key file ${privateKeyPath} is empty. Please ensure the file contains a valid GitHub App private key.`
-      );
-    }
-
-    // Parse private key - handle both with and without newlines (for env var case)
-    // Replace literal \n with actual newlines, then trim any extra whitespace
-    let formattedPrivateKey = privateKey.replace(/\\n/g, "\n").trim();
 
     // Validate private key format (should be PEM format)
     const hasBeginMarker =
@@ -96,8 +107,11 @@ export class GitHubWebhookService {
       formattedPrivateKey.includes("-----END PRIVATE KEY-----");
 
     if (!hasBeginMarker || !hasEndMarker) {
+      const source = privateKeyEnv
+        ? "GITHUB_APP_PRIVATE_KEY"
+        : privateKeyPath || "unknown";
       throw new Error(
-        `Private key in ${privateKeyPath} does not appear to be in valid PEM format. ` +
+        `Private key from ${source} does not appear to be in valid PEM format. ` +
           `Expected format: -----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY----- ` +
           `or -----BEGIN PRIVATE KEY----- ... -----END PRIVATE KEY-----`
       );
